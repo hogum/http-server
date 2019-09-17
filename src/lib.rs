@@ -1,11 +1,93 @@
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::{error, fmt};
 
 /// Error implementation that handles thread pool creation
 pub struct PoolCreationError {}
 
+/// Holds jobs and thread workers to execute the jobs
 pub struct ThreadPool {
-    threads: Vec<thread::JoinHandle<()>>,
+    workers: Vec<Worker>,
+    sender: mpsc::Sender<Job>,
+}
+
+/// Handles sending of closures to threads for execution
+struct Worker {
+    id: usize,
+    join_handle: thread::JoinHandle<()>,
+}
+
+/// Helps take ownership of a value in Box<T>
+/// using Box<Self>
+trait FnBox {
+    fn unwrap_box(self: Box<Self>);
+}
+
+/// Defines FnBox for a type that implements FnOnce()
+impl<F: FnOnce()> FnBox for F {
+    fn unwrap_box(self: Box<Self>) {
+        (*self)()
+    }
+}
+
+type Job = Box<dyn FnBox + Send + 'static>;
+
+impl ThreadPool {
+    /// Returns a Pool of threads instance
+    ///
+    /// # Arguments
+    /// size: usize
+    /// - Number of threads to have in the pool
+    ///
+    /// # Panics
+    /// - If the size is 0
+    pub fn new(size: usize) -> Result<ThreadPool, PoolCreationError> {
+        if size == 0 {
+            return Err(PoolCreationError {});
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        let mut workers = Vec::with_capacity(size);
+        let receiver = Arc::new(Mutex::new(receiver));
+
+        for i in 0..size {
+            workers.push(Worker::new(i, Arc::clone(&receiver)));
+        }
+        Ok(ThreadPool { workers, sender })
+    }
+
+    pub fn execute<F>(&self, f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let job = Box::new(f);
+        self.sender.send(job).unwrap();
+    }
+}
+
+impl Worker {
+    /// Creates a worker instance that holds a
+    /// thread spawned with an empty closure
+    ///
+    /// # Arguments
+    /// - id: usize
+    /// The ID to identify the worker instance
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+        let thread = thread::spawn(move || loop {
+            let job = receiver
+                .lock()
+                .expect("Unable to capture lock")
+                .recv()
+                .unwrap();
+            println!("Worker {} received job. Executing...", id);
+            job.unwrap_box();
+        });
+
+        Worker {
+            id,
+            join_handle: thread,
+        }
+    }
 }
 
 impl error::Error for PoolCreationError {
@@ -23,31 +105,5 @@ impl fmt::Display for PoolCreationError {
 impl fmt::Debug for PoolCreationError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{{file: {}, line: {} }}", file!(), line!())
-    }
-}
-
-impl ThreadPool {
-    /// Returns a Pool of threads instance
-    ///
-    /// # Arguments
-    /// size: usize
-    /// - Number of threads to have in the pool
-    ///
-    /// # Panics
-    /// - If the size is 0
-    pub fn new(size: usize) -> Result<ThreadPool, PoolCreationError> {
-        if size == 0 {
-            return Err(PoolCreationError {});
-        }
-
-        let mut threads = Vec::with_capacity(size);
-        for _ in 0..size {}
-        Ok(ThreadPool { threads })
-    }
-    pub fn execute<F>(&self, f: F)
-    where
-        F: FnOnce() + Send + 'static,
-    {
-
     }
 }

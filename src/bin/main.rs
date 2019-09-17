@@ -1,5 +1,6 @@
 //! Listens to incoming tcp streams
 //!
+use std::error;
 use std::fs;
 use std::io::prelude::*;
 use std::net::TcpListener;
@@ -12,7 +13,7 @@ use server::ThreadPool;
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7676").unwrap();
-    let pool = ThreadPool::new(0).unwrap_or_else(|err| {
+    let pool = ThreadPool::new(4).unwrap_or_else(|err| {
         eprintln!("{}", err);
         std::process::exit(1);
     });
@@ -20,7 +21,9 @@ fn main() {
     for stream in listener.incoming() {
         let stream = stream.unwrap();
         pool.execute(|| {
-            process_connection(stream);
+            if let Err(er) = process_connection(stream) {
+                eprintln!("{}", er);
+            }
         });
     }
 }
@@ -29,7 +32,7 @@ fn main() {
 ///
 ///# Remarks
 ///Shows sent data
-fn process_connection(mut stream: TcpStream) {
+fn process_connection(mut stream: TcpStream) -> Result<(), Box<dyn error::Error>> {
     let mut buffer = [0; 512];
     let get_response = b"GET / HTTP/1.1";
     let res = b"GET /favicon.ico HTTP/1.1";
@@ -46,12 +49,13 @@ fn process_connection(mut stream: TcpStream) {
         ("HTTP/1.1 404 NOT FOUND\r\n\r\n", "src/temp/404.html")
     };
 
-    let contents = fs::read_to_string(filename).unwrap();
+    let contents = fs::read_to_string(filename)?;
     let response = format!("{}{}", status_line, contents);
 
-    stream.write(response.as_bytes()).unwrap();
-    stream.flush().unwrap();
+    stream.write(response.as_bytes())?;
+    stream.flush()?;
 
-    println!("Request: {}", String::from_utf8_lossy(&buffer[..]));
+    // println!("Request: {}", String::from_utf8_lossy(&buffer[..]));
     // lossy: Replace invalid sequences with ?
+    Ok(())
 }
