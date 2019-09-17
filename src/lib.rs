@@ -8,19 +8,24 @@ pub struct PoolCreationError {}
 /// Holds jobs and thread workers to execute the jobs
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: mpsc::Sender<JobMessage>,
 }
 
 /// Handles sending of closures to threads for execution
 struct Worker {
     id: usize,
-    join_handle: thread::JoinHandle<()>,
+    join_handle: Option<thread::JoinHandle<()>>,
 }
 
 /// Helps take ownership of a value in Box<T>
 /// using Box<Self>
 trait FnBox {
     fn unwrap_box(self: Box<Self>);
+}
+
+enum JobMessage {
+    NewJob(Job),
+    Terminate,
 }
 
 /// Defines FnBox for a type that implements FnOnce()
@@ -61,7 +66,26 @@ impl ThreadPool {
         F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
-        self.sender.send(job).unwrap();
+        self.sender.send(JobMessage::NewJob(job)).unwrap();
+    }
+}
+
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        println!("Sending terminate message to all workers");
+
+        for _ in &mut self.workers {
+            self.sender.send(JobMessage::Terminate).unwrap();
+        }
+        println!("Terminating workers");
+
+        for worker in &mut self.workers {
+            println!("Shutting down worker {}", worker.id);
+
+            if let Some(thread) = worker.join_handle.take() {
+                thread.join().unwrap();
+            }
+        }
     }
 }
 
@@ -72,20 +96,28 @@ impl Worker {
     /// # Arguments
     /// - id: usize
     /// The ID to identify the worker instance
-    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<JobMessage>>>) -> Worker {
         let thread = thread::spawn(move || loop {
-            let job = receiver
+            let message = receiver
                 .lock()
                 .expect("Unable to capture lock")
                 .recv()
                 .unwrap();
-            println!("Worker {} received job. Executing...", id);
-            job.unwrap_box();
+            match message {
+                JobMessage::NewJob(job) => {
+                    println!("Worker {} received job. Executing...", id);
+                    job.unwrap_box();
+                }
+                JobMessage::Terminate => {
+                    println!("Terminating worker {}", id);
+                    break;
+                }
+            }
         });
 
         Worker {
             id,
-            join_handle: thread,
+            join_handle: Some(thread),
         }
     }
 }
